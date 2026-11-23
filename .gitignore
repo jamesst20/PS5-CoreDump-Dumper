@@ -4,3 +4,7 @@ dist/
 build/
 
 .DS_Store
+
+web/node_modules/
+web/dist/
+src/web_assets.h

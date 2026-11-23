@@ -18,6 +18,7 @@
 #include "notify.h"
 #include "util.h"
 #include "version.h"
+#include "web.h"
 
 static volatile sig_atomic_t g_stop;
 
@@ -91,6 +92,12 @@ int main(void) {
     close(lock_fd);
     return EXIT_FAILURE;
   }
+
+#ifndef HOST_TEST
+  if (web_start(DUMPER_WEB_PORT, &log)) {
+    log_printf(&log, "cannot start the web UI on port %d", DUMPER_WEB_PORT);
+  }
+#endif
 
   /* Open the watch directory once before announcing, if possible. */
   dumper_poll(dumper);

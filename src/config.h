@@ -25,6 +25,12 @@
 #define DUMPER_LOCK_PATH DUMPER_OUT_ROOT "/dumper.lock"
 #define DUMPER_LOG_PATH DUMPER_OUT_ROOT "/dumper.log"
 
+/* Web UI and JSON API, served by the payload on all interfaces.
+ * Override at build time with -DDUMPER_WEB_PORT=<port>. */
+#ifndef DUMPER_WEB_PORT
+#define DUMPER_WEB_PORT 19090
+#endif
+
 /* The console normally deletes a coredump folder within seconds. */
 #define DUMPER_IDLE_MS 100
 #define DUMPER_ACTIVE_MS 25

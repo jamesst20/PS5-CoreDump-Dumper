@@ -51,6 +51,38 @@ previous instance and takes over.
 No interaction is required after startup. The dumper reports readiness with a
 debug toast and a log entry.
 
+## Web UI
+
+The payload serves a small web UI and JSON API on port 19090:
+
+```text
+http://<console-ip>:19090
+```
+
+It lists saved coredumps and their files, downloads a whole dump as a `.tar`
+or individual files, deletes dumps, and shows `dumper.log`, `_klog.txt` and
+`_manifest.txt`.
+
+The UI lives in `web/` (Svelte 5, Tailwind CSS 4, DaisyUI 5) and is embedded in
+the ELF, so no extra files are needed on the console. Building the payload
+therefore needs Node.js and npm once; `make ui` rebuilds only the frontend.
+
+For development run `npm run dev` inside `web/`. Vite listens on port 19090 and
+proxies `/api` to `PS5_URL` (default `http://ps5:19090`).
+
+API endpoints:
+
+```text
+GET    /api/dumps                 list coredumps and their files
+GET    /api/dumps/<name>          download the dump as a tar archive
+GET    /api/dumps/<name>/<file>   download one file
+DELETE /api/dumps/<name>          delete the dump
+GET    /api/logs                  list available logs
+GET    /api/log?name=<path>       read a log
+```
+
+The API has no authentication, so only expose it on a trusted local network.
+
 ## Coredump Storage
 
 Completed crashes are stored under:
@@ -88,6 +120,7 @@ Requirements:
 - POSIX build host
 - PS5 Payload SDK at `PS5_PAYLOAD_SDK`
 - `llvm-config` on `PATH` for the SDK toolchain wrapper
+- Node.js and npm for the bundled web UI
 
 ```sh
 PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk make
@@ -101,6 +134,7 @@ Other targets:
 
 ```sh
 make version     # print the current version
+make ui          # rebuild and embed the web UI
 make deploy      # build and upload to PS5_HOST:PS5_PORT
 make host-test   # host-side smoke test with kernel stubs
 make format      # apply .clang-format
