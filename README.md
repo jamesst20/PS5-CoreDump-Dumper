@@ -31,6 +31,7 @@ while a large dump is still being copied.
 - Keeps copying from already-opened files even if the console deletes the
   source folder during a large dump.
 - Runs unattended in the background and requires no interaction.
+- Includes an ampr-emu-ng debug tab (9090 pages, trace, crash capture and one-click log download).
 
 ## Usage
 
@@ -83,6 +84,31 @@ GET    /api/log?name=<path>       read a log
 
 The API has no authentication, so only expose it on a trusted local network.
 
+### Ampr-emu-ng debug
+
+The **Ampr-emu-ng - Debug** tab reads the debug build's diagnostics:
+
+- proxies the `9090` pages (`/metrics`, `/fsfail`, `/modules`, `/threads`,
+  `/queues`, `/set`);
+- reads `/data/ampr_emu_trace.txt` and `/data/ampr_emu_tune.txt`;
+- downloads all of them as one `ampr-emu-ng-logs.zip`;
+- can trigger `/crash` on a frozen game so the system coredump is captured by
+  this payload.
+
+The `9090` pages need the debug `libSceAmpr-debug.sprx` and a running game. The
+trace is still useful when a game crashes on start.
+
+Debug endpoints:
+
+```text
+GET  /api/debug/status
+GET  /api/debug/ampr?page=metrics|fsfail|modules|threads|queues|set
+GET  /api/debug/trace
+GET  /api/debug/tune
+GET  /api/debug/logs.zip
+POST /api/debug/crash
+```
+
 ## Coredump Storage
 
 Completed crashes are stored under:
@@ -112,6 +138,8 @@ Each directory contains the copied crash evidence and two generated files:
   tracked file.
 - `_klog.txt` — kernel log covering 60 seconds before to 3 seconds after the
   crash directory disappeared.
+- `_ampr_trace.txt` — a copy of `/data/ampr_emu_trace.txt` when the debug
+  ampr-emu-ng build was in use.
 
 ## Build
 

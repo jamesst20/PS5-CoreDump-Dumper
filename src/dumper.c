@@ -447,9 +447,38 @@ static void write_kernel_log(dumper_t *dumper, dump_t *dump) {
   }
 }
 
+static void write_ampr_trace(dump_t *dump) {
+  static const char path[] = "/data/ampr_emu_trace.txt";
+  char dest[PATH_MAX];
+  char chunk[65536];
+  int in;
+  int out;
+
+  in = open(path, O_RDONLY | O_CLOEXEC);
+  if (in < 0) {
+    return;
+  }
+  dump_dest_path(dest, sizeof(dest), dump, "_ampr_trace.txt");
+  out = open(dest, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, DUMPER_MODE_FILE);
+  if (out >= 0) {
+    for (;;) {
+      ssize_t got = read(in, chunk, sizeof(chunk));
+      if (got < 0 && errno == EINTR) {
+        continue;
+      }
+      if (got <= 0 || !write_all(out, chunk, (size_t)got)) {
+        break;
+      }
+    }
+    close(out);
+  }
+  close(in);
+}
+
 static void finish_dump(dumper_t *dumper, dump_t *dump) {
   write_manifest(dump);
   write_kernel_log(dumper, dump);
+  write_ampr_trace(dump);
   log_printf(dumper->log, "%s: finished, %zu file(s) tracked", dump->name, dump->file_count);
 
   for (size_t i = 0; i < dump->file_count; i++) {

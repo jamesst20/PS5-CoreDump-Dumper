@@ -49,6 +49,9 @@ int main(void) {
   klog_t *klog;
   int stopped;
   int lock_fd;
+  bool web_ok = false;
+  char ip[64] = "";
+  char message[160];
 
   if (mkdir(DUMPER_OUT_ROOT, DUMPER_MODE_DIR) && errno != EEXIST) {
     fprintf(stderr, "coredump-dumper: mkdir %s: %s\n", DUMPER_OUT_ROOT, strerror(errno));
@@ -94,14 +97,23 @@ int main(void) {
   }
 
 #ifndef HOST_TEST
-  if (web_start(DUMPER_WEB_PORT, &log)) {
+  web_ok = web_start(DUMPER_WEB_PORT, &log) == 0;
+  if (!web_ok) {
     log_printf(&log, "cannot start the web UI on port %d", DUMPER_WEB_PORT);
   }
 #endif
 
   /* Open the watch directory once before announcing, if possible. */
   dumper_poll(dumper);
-  notify_send("CoreDump Dumper\nNow watching");
+  if (web_ok && local_ipv4(ip, sizeof(ip))) {
+    snprintf(message, sizeof(message), "CoreDump Dumper\nhttp://%s:%d", ip, DUMPER_WEB_PORT);
+    log_printf(&log, "web: http://%s:%d", ip, DUMPER_WEB_PORT);
+  } else if (web_ok) {
+    snprintf(message, sizeof(message), "CoreDump Dumper\nport %d", DUMPER_WEB_PORT);
+  } else {
+    snprintf(message, sizeof(message), "CoreDump Dumper\nNow watching");
+  }
+  notify_send(message);
 
   signal(SIGINT, on_signal);
   signal(SIGTERM, on_signal);

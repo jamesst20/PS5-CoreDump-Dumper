@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -32,6 +33,8 @@
 #include "log.h"
 #include "util.h"
 #include "web_assets.h"
+#include "web_debug.h"
+#include "web_util.h"
 
 #ifndef PATH_MAX
 #define PATH_MAX 1024
@@ -41,13 +44,6 @@
 #define LOG_READ_MAX (4u * 1024u * 1024u)
 #define COPY_MAX (64u * 1024u)
 #define WEB_THREAD_STACK (512u * 1024u)
-
-typedef struct {
-  char *data;
-  size_t len;
-  size_t cap;
-  bool failed;
-} buf_t;
 
 typedef struct {
   char name[NAME_MAX + 1];
@@ -64,7 +60,7 @@ typedef struct {
   time_t mtime;
 } tar_entry_t;
 
-static void buf_need(buf_t *buf, size_t extra) {
+static void web_buf_need(web_buf_t *buf, size_t extra) {
   if (buf->failed || buf->len + extra + 1 <= buf->cap) {
     return;
   }
@@ -81,8 +77,8 @@ static void buf_need(buf_t *buf, size_t extra) {
   buf->cap = cap;
 }
 
-static void buf_add(buf_t *buf, const void *data, size_t length) {
-  buf_need(buf, length);
+void web_buf_add(web_buf_t *buf, const void *data, size_t length) {
+  web_buf_need(buf, length);
   if (buf->failed) {
     return;
   }
@@ -91,9 +87,9 @@ static void buf_add(buf_t *buf, const void *data, size_t length) {
   buf->data[buf->len] = '\0';
 }
 
-static void buf_puts(buf_t *buf, const char *text) { buf_add(buf, text, strlen(text)); }
+void web_buf_puts(web_buf_t *buf, const char *text) { web_buf_add(buf, text, strlen(text)); }
 
-static void buf_printf(buf_t *buf, const char *format, ...) {
+void web_buf_printf(web_buf_t *buf, const char *format, ...) {
   char line[512];
   va_list ap;
 
@@ -104,22 +100,22 @@ static void buf_printf(buf_t *buf, const char *format, ...) {
   int length = vsnprintf(line, sizeof(line), format, ap);
   va_end(ap);
   if (length > 0) {
-    buf_add(buf, line, (size_t)length < sizeof(line) ? (size_t)length : sizeof(line) - 1);
+    web_buf_add(buf, line, (size_t)length < sizeof(line) ? (size_t)length : sizeof(line) - 1);
   }
 }
 
-static void buf_json(buf_t *buf, const char *text) {
-  buf_puts(buf, "\"");
+void web_buf_json(web_buf_t *buf, const char *text) {
+  web_buf_puts(buf, "\"");
   for (const unsigned char *p = (const unsigned char *)text; *p; p++) {
     if (*p == '"' || *p == '\\') {
-      buf_printf(buf, "\\%c", *p);
+      web_buf_printf(buf, "\\%c", *p);
     } else if (*p < 0x20) {
-      buf_printf(buf, "\\u%04x", *p);
+      web_buf_printf(buf, "\\u%04x", *p);
     } else {
-      buf_add(buf, p, 1);
+      web_buf_add(buf, p, 1);
     }
   }
-  buf_puts(buf, "\"");
+  web_buf_puts(buf, "\"");
 }
 
 static bool send_all(int fd, const void *data, size_t length) {
@@ -139,20 +135,20 @@ static bool send_all(int fd, const void *data, size_t length) {
   return true;
 }
 
-static void send_reply(int fd, int status, const char *reason, const char *type, const char *extra, const char *body,
-                       size_t length) {
-  buf_t head = {0};
+void web_send_reply(int fd, int status, const char *reason, const char *type, const char *extra, const char *body,
+                    size_t length) {
+  web_buf_t head = {0};
 
-  buf_printf(&head, "HTTP/1.1 %d %s\r\n", status, reason);
-  buf_printf(&head, "Content-Type: %s\r\n", type ? type : "text/plain; charset=utf-8");
-  buf_printf(&head, "Content-Length: %zu\r\n", length);
-  buf_puts(&head, "Access-Control-Allow-Origin: *\r\n");
-  buf_puts(&head, "Connection: close\r\n");
-  buf_puts(&head, "Cache-Control: no-store\r\n");
+  web_buf_printf(&head, "HTTP/1.1 %d %s\r\n", status, reason);
+  web_buf_printf(&head, "Content-Type: %s\r\n", type ? type : "text/plain; charset=utf-8");
+  web_buf_printf(&head, "Content-Length: %zu\r\n", length);
+  web_buf_puts(&head, "Access-Control-Allow-Origin: *\r\n");
+  web_buf_puts(&head, "Connection: close\r\n");
+  web_buf_puts(&head, "Cache-Control: no-store\r\n");
   if (extra) {
-    buf_puts(&head, extra);
+    web_buf_puts(&head, extra);
   }
-  buf_puts(&head, "\r\n");
+  web_buf_puts(&head, "\r\n");
   if (!head.failed) {
     send_all(fd, head.data, head.len);
   }
@@ -162,22 +158,22 @@ static void send_reply(int fd, int status, const char *reason, const char *type,
   free(head.data);
 }
 
-static void send_text(int fd, int status, const char *reason, const char *text) {
-  send_reply(fd, status, reason, "text/plain; charset=utf-8", NULL, text, strlen(text));
+void web_send_text(int fd, int status, const char *reason, const char *text) {
+  web_send_reply(fd, status, reason, "text/plain; charset=utf-8", NULL, text, strlen(text));
 }
 
-static void send_buffer(int fd, int status, const char *reason, const char *type, buf_t *body) {
+void web_send_buffer(int fd, int status, const char *reason, const char *type, web_buf_t *body) {
   if (body->failed) {
-    send_text(fd, 500, "Internal Server Error", "out of memory\n");
+    web_send_text(fd, 500, "Internal Server Error", "out of memory\n");
   } else {
-    send_reply(fd, status, reason, type, NULL, body->data ? body->data : "", body->len);
+    web_send_reply(fd, status, reason, type, NULL, body->data ? body->data : "", body->len);
   }
   free(body->data);
   body->data = NULL;
 }
 
 /* Only direct children of the dump root with harmless names are reachable. */
-static bool valid_name(const char *name) {
+bool web_valid_name(const char *name) {
   size_t length = strlen(name);
 
   if (length == 0 || length > NAME_MAX) {
@@ -236,7 +232,7 @@ static int split_path(const char *path, char segments[][NAME_MAX + 1], int max) 
   return count;
 }
 
-static bool query_value(const char *query, const char *key, char *value, size_t cap) {
+bool web_query_value(const char *query, const char *key, char *value, size_t cap) {
   size_t key_length = strlen(key);
   const char *cursor = query;
 
@@ -282,7 +278,7 @@ static int compare_dumps(const void *left, const void *right) {
   return strcmp(a->name, b->name);
 }
 
-static void emit_items(buf_t *json, const char *name) {
+static void emit_items(web_buf_t *json, const char *name) {
   char path[PATH_MAX];
   DIR *dir;
   struct dirent *entry;
@@ -303,11 +299,11 @@ static void emit_items(buf_t *json, const char *name) {
     if (stat(full, &statbuf) || !S_ISREG(statbuf.st_mode)) {
       continue;
     }
-    buf_puts(json, first ? "" : ",");
+    web_buf_puts(json, first ? "" : ",");
     first = false;
-    buf_puts(json, "{\"name\":");
-    buf_json(json, entry->d_name);
-    buf_printf(json, ",\"bytes\":%lld}", (long long)statbuf.st_size);
+    web_buf_puts(json, "{\"name\":");
+    web_buf_json(json, entry->d_name);
+    web_buf_printf(json, ",\"bytes\":%lld}", (long long)statbuf.st_size);
   }
   closedir(dir);
 }
@@ -329,7 +325,7 @@ static dump_entry_t *collect_dumps(size_t *count_out) {
     DIR *dir;
     struct dirent *file;
 
-    if (entry->d_name[0] == '.' || !valid_name(entry->d_name)) {
+    if (entry->d_name[0] == '.' || !web_valid_name(entry->d_name)) {
       continue;
     }
     snprintf(path, sizeof(path), "%s/%s", DUMPER_OUT_ROOT, entry->d_name);
@@ -386,33 +382,33 @@ static dump_entry_t *collect_dumps(size_t *count_out) {
 static void api_dumps(int fd) {
   size_t count;
   dump_entry_t *entries = collect_dumps(&count);
-  buf_t json = {0};
+  web_buf_t json = {0};
 
-  buf_puts(&json, "{\"dumps\":[");
+  web_buf_puts(&json, "{\"dumps\":[");
   for (size_t i = 0; i < count; i++) {
-    buf_puts(&json, i ? ",{\"name\":" : "{\"name\":");
-    buf_json(&json, entries[i].name);
-    buf_printf(&json, ",\"bytes\":%lld,\"files\":%d,\"mtime\":%lld,\"log\":%s,\"video\":%s,\"items\":[",
-               (long long)entries[i].bytes, entries[i].files, (long long)entries[i].mtime, entries[i].has_log ? "true" : "false",
-               entries[i].has_video ? "true" : "false");
+    web_buf_puts(&json, i ? ",{\"name\":" : "{\"name\":");
+    web_buf_json(&json, entries[i].name);
+    web_buf_printf(&json, ",\"bytes\":%lld,\"files\":%d,\"mtime\":%lld,\"log\":%s,\"video\":%s,\"items\":[",
+                   (long long)entries[i].bytes, entries[i].files, (long long)entries[i].mtime,
+                   entries[i].has_log ? "true" : "false", entries[i].has_video ? "true" : "false");
     emit_items(&json, entries[i].name);
-    buf_puts(&json, "]}");
+    web_buf_puts(&json, "]}");
   }
-  buf_puts(&json, "]}");
+  web_buf_puts(&json, "]}");
   free(entries);
-  send_buffer(fd, 200, "OK", "application/json", &json);
+  web_send_buffer(fd, 200, "OK", "application/json", &json);
 }
 
 static void api_logs(int fd) {
   size_t count;
   dump_entry_t *entries = collect_dumps(&count);
   struct stat statbuf;
-  buf_t json = {0};
+  web_buf_t json = {0};
   bool first = true;
 
-  buf_puts(&json, "{\"logs\":[");
+  web_buf_puts(&json, "{\"logs\":[");
   if (!stat(DUMPER_LOG_PATH, &statbuf) && S_ISREG(statbuf.st_mode)) {
-    buf_printf(&json, "{\"name\":\"dumper.log\",\"bytes\":%lld}", (long long)statbuf.st_size);
+    web_buf_printf(&json, "{\"name\":\"dumper.log\",\"bytes\":%lld}", (long long)statbuf.st_size);
     first = false;
   }
   for (size_t i = 0; i < count; i++) {
@@ -420,20 +416,20 @@ static void api_logs(int fd) {
 
     snprintf(full, sizeof(full), "%s/%s/_klog.txt", DUMPER_OUT_ROOT, entries[i].name);
     if (!stat(full, &statbuf) && S_ISREG(statbuf.st_mode)) {
-      buf_puts(&json, first ? "" : ",");
+      web_buf_puts(&json, first ? "" : ",");
       first = false;
-      buf_printf(&json, "{\"name\":\"%s/_klog.txt\",\"bytes\":%lld}", entries[i].name, (long long)statbuf.st_size);
+      web_buf_printf(&json, "{\"name\":\"%s/_klog.txt\",\"bytes\":%lld}", entries[i].name, (long long)statbuf.st_size);
     }
     snprintf(full, sizeof(full), "%s/%s/_manifest.txt", DUMPER_OUT_ROOT, entries[i].name);
     if (!stat(full, &statbuf) && S_ISREG(statbuf.st_mode)) {
-      buf_puts(&json, first ? "" : ",");
+      web_buf_puts(&json, first ? "" : ",");
       first = false;
-      buf_printf(&json, "{\"name\":\"%s/_manifest.txt\",\"bytes\":%lld}", entries[i].name, (long long)statbuf.st_size);
+      web_buf_printf(&json, "{\"name\":\"%s/_manifest.txt\",\"bytes\":%lld}", entries[i].name, (long long)statbuf.st_size);
     }
   }
-  buf_puts(&json, "]}");
+  web_buf_puts(&json, "]}");
   free(entries);
-  send_buffer(fd, 200, "OK", "application/json", &json);
+  web_send_buffer(fd, 200, "OK", "application/json", &json);
 }
 
 static void api_log(int fd, const char *query) {
@@ -441,10 +437,10 @@ static void api_log(int fd, const char *query) {
   char path[PATH_MAX];
   char *file;
   struct stat statbuf;
-  buf_t body = {0};
+  web_buf_t body = {0};
 
-  if (!query_value(query, "name", name, sizeof(name))) {
-    send_text(fd, 400, "Bad Request", "missing name\n");
+  if (!web_query_value(query, "name", name, sizeof(name))) {
+    web_send_text(fd, 400, "Bad Request", "missing name\n");
     return;
   }
   if (!strcmp(name, "dumper.log")) {
@@ -452,13 +448,13 @@ static void api_log(int fd, const char *query) {
   } else {
     char *slash = strchr(name, '/');
     if (!slash) {
-      send_text(fd, 400, "Bad Request", "invalid log name\n");
+      web_send_text(fd, 400, "Bad Request", "invalid log name\n");
       return;
     }
     *slash = '\0';
     file = slash + 1;
-    if (!valid_name(name) || (strcmp(file, "_klog.txt") && strcmp(file, "_manifest.txt"))) {
-      send_text(fd, 400, "Bad Request", "invalid log name\n");
+    if (!web_valid_name(name) || (strcmp(file, "_klog.txt") && strcmp(file, "_manifest.txt"))) {
+      web_send_text(fd, 400, "Bad Request", "invalid log name\n");
       return;
     }
     snprintf(path, sizeof(path), "%s/%s/%s", DUMPER_OUT_ROOT, name, file);
@@ -469,26 +465,26 @@ static void api_log(int fd, const char *query) {
     if (log_fd >= 0) {
       close(log_fd);
     }
-    send_text(fd, 404, "Not Found", "log not found\n");
+    web_send_text(fd, 404, "Not Found", "log not found\n");
     return;
   }
 
   off_t start = statbuf.st_size > (off_t)LOG_READ_MAX ? statbuf.st_size - (off_t)LOG_READ_MAX : 0;
   if (start > 0) {
-    buf_puts(&body, "[... earlier output truncated ...]\n\n");
+    web_buf_puts(&body, "[... earlier output truncated ...]\n\n");
   }
   if (lseek(log_fd, start, SEEK_SET) >= 0) {
     char chunk[COPY_MAX];
     ssize_t got;
     while ((got = read(log_fd, chunk, sizeof(chunk))) > 0) {
-      buf_add(&body, chunk, (size_t)got);
+      web_buf_add(&body, chunk, (size_t)got);
       if (body.failed) {
         break;
       }
     }
   }
   close(log_fd);
-  send_buffer(fd, 200, "OK", "text/plain; charset=utf-8", &body);
+  web_send_buffer(fd, 200, "OK", "text/plain; charset=utf-8", &body);
 }
 
 static int remove_tree(const char *path) {
@@ -528,19 +524,19 @@ static int remove_tree(const char *path) {
 
 static void api_delete(int fd, const char *name) {
   char path[PATH_MAX];
-  buf_t json = {0};
+  web_buf_t json = {0};
 
-  if (!valid_name(name)) {
-    send_text(fd, 400, "Bad Request", "invalid name\n");
+  if (!web_valid_name(name)) {
+    web_send_text(fd, 400, "Bad Request", "invalid name\n");
     return;
   }
   snprintf(path, sizeof(path), "%s/%s", DUMPER_OUT_ROOT, name);
   if (remove_tree(path)) {
-    send_text(fd, 500, "Internal Server Error", "cannot delete coredump\n");
+    web_send_text(fd, 500, "Internal Server Error", "cannot delete coredump\n");
     return;
   }
-  buf_puts(&json, "{\"ok\":true}");
-  send_buffer(fd, 200, "OK", "application/json", &json);
+  web_buf_puts(&json, "{\"ok\":true}");
+  web_send_buffer(fd, 200, "OK", "application/json", &json);
 }
 
 static void tar_octal(char *field, size_t width, unsigned long long value) {
@@ -658,10 +654,10 @@ static void download_dump(int fd, const char *name, const char *query) {
   bool skip_video;
   struct stat statbuf;
 
-  skip_video = query_value(query, "novideo", flag, sizeof(flag)) && strcmp(flag, "0");
+  skip_video = web_query_value(query, "novideo", flag, sizeof(flag)) && strcmp(flag, "0");
   snprintf(path, sizeof(path), "%s/%s", DUMPER_OUT_ROOT, name);
-  if (!valid_name(name) || stat(path, &statbuf) || !S_ISDIR(statbuf.st_mode)) {
-    send_text(fd, 404, "Not Found", "coredump not found\n");
+  if (!web_valid_name(name) || stat(path, &statbuf) || !S_ISDIR(statbuf.st_mode)) {
+    web_send_text(fd, 404, "Not Found", "coredump not found\n");
     return;
   }
   files = collect_tar(name, &count, skip_video);
@@ -670,7 +666,7 @@ static void download_dump(int fd, const char *name, const char *query) {
   }
   snprintf(extra, sizeof(extra), "Content-Disposition: attachment; filename=\"%s%s.tar\"\r\n", name,
            skip_video ? "-no-video" : "");
-  send_reply(fd, 200, "OK", "application/x-tar", extra, NULL, (size_t)total);
+  web_send_reply(fd, 200, "OK", "application/x-tar", extra, NULL, (size_t)total);
 
   bool ok = true;
   for (size_t i = 0; i < count && ok; i++) {
@@ -695,8 +691,8 @@ static void download_file(int fd, const char *name, const char *file) {
   char extra[NAME_MAX + 64];
   struct stat statbuf;
 
-  if (!valid_name(name) || !valid_name(file)) {
-    send_text(fd, 400, "Bad Request", "invalid name\n");
+  if (!web_valid_name(name) || !web_valid_name(file)) {
+    web_send_text(fd, 400, "Bad Request", "invalid name\n");
     return;
   }
   snprintf(path, sizeof(path), "%s/%s/%s", DUMPER_OUT_ROOT, name, file);
@@ -705,12 +701,12 @@ static void download_file(int fd, const char *name, const char *file) {
     if (handle >= 0) {
       close(handle);
     }
-    send_text(fd, 404, "Not Found", "file not found\n");
+    web_send_text(fd, 404, "Not Found", "file not found\n");
     return;
   }
   close(handle);
   snprintf(extra, sizeof(extra), "Content-Disposition: attachment; filename=\"%s\"\r\n", file);
-  send_reply(fd, 200, "OK", "application/octet-stream", extra, NULL, (size_t)statbuf.st_size);
+  web_send_reply(fd, 200, "OK", "application/octet-stream", extra, NULL, (size_t)statbuf.st_size);
   stream_file(fd, path, statbuf.st_size);
 }
 
@@ -732,10 +728,10 @@ static void serve_static(int fd, const char *path) {
     }
   }
   if (!asset) {
-    send_text(fd, 404, "Not Found", "not found\n");
+    web_send_text(fd, 404, "Not Found", "not found\n");
     return;
   }
-  send_reply(fd, 200, "OK", asset->type, NULL, asset->data, asset->length);
+  web_send_reply(fd, 200, "OK", asset->type, NULL, asset->data, asset->length);
 }
 
 static void handle_api(int fd, const char *method, const char *path, const char *query) {
@@ -744,8 +740,16 @@ static void handle_api(int fd, const char *method, const char *path, const char 
   bool remove = !strcmp(method, "DELETE");
   int count = split_path(path, segments, 4);
 
+  if (get && !strcmp(path, "/api/version")) {
+    web_buf_t json = {0};
+    web_buf_puts(&json, "{\"version\":");
+    web_buf_json(&json, DUMPER_VERSION);
+    web_buf_puts(&json, "}");
+    web_send_buffer(fd, 200, "OK", "application/json", &json);
+    return;
+  }
   if (count < 2) {
-    send_text(fd, 404, "Not Found", "not found\n");
+    web_send_text(fd, 404, "Not Found", "not found\n");
     return;
   }
 
@@ -778,24 +782,26 @@ static void handle_api(int fd, const char *method, const char *path, const char 
       }
     }
   }
-  send_text(fd, 404, "Not Found", "not found\n");
+  web_send_text(fd, 404, "Not Found", "not found\n");
 }
 
-static void handle_request(int fd, char *request) {
+static void handle_request(int fd, char *request, bool csrf) {
   char method[8];
   char target[2048];
 
   if (sscanf(request, "%7s %2047s", method, target) != 2) {
-    send_text(fd, 400, "Bad Request", "bad request\n");
+    web_send_text(fd, 400, "Bad Request", "bad request\n");
     return;
   }
   if (!strcmp(method, "OPTIONS")) {
-    send_reply(fd, 204, "No Content", NULL,
-               "Access-Control-Allow-Methods: GET, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\n", NULL, 0);
+    web_send_reply(fd, 204, "No Content", NULL,
+                   "Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\n"
+                   "Access-Control-Allow-Headers: Content-Type\r\n",
+                   NULL, 0);
     return;
   }
-  if (strcmp(method, "GET") && strcmp(method, "DELETE")) {
-    send_text(fd, 405, "Method Not Allowed", "method not allowed\n");
+  if (strcmp(method, "GET") && strcmp(method, "POST") && strcmp(method, "DELETE")) {
+    web_send_text(fd, 405, "Method Not Allowed", "method not allowed\n");
     return;
   }
 
@@ -805,13 +811,46 @@ static void handle_request(int fd, char *request) {
   } else {
     query = target + strlen(target);
   }
-  if (!strncmp(target, "/api/", 5)) {
-    handle_api(fd, method, target, query);
+  if (!strncmp(target, "/api/debug", 10) && (!target[10] || target[10] == '/')) {
+    web_debug_route(fd, method, target, query, csrf);
+  } else if (!strncmp(target, "/api/", 5)) {
+    if (!strcmp(method, "POST")) {
+      web_send_text(fd, 405, "Method Not Allowed", "method not allowed\n");
+    } else {
+      handle_api(fd, method, target, query);
+    }
   } else if (strcmp(method, "GET")) {
-    send_text(fd, 405, "Method Not Allowed", "method not allowed\n");
+    web_send_text(fd, 405, "Method Not Allowed", "method not allowed\n");
   } else {
     serve_static(fd, target);
   }
+}
+
+static bool header_flag(const char *request, const char *name) {
+  const char *end = strstr(request, "\r\n\r\n");
+  const char *line = request;
+  size_t name_length = strlen(name);
+
+  if (!end) {
+    return false;
+  }
+  while (line < end) {
+    const char *next = strstr(line, "\r\n");
+    size_t length = next ? (size_t)(next - line) : (size_t)(end - line);
+
+    if (length > name_length && !strncasecmp(line, name, name_length) && line[name_length] == ':') {
+      const char *value = line + name_length + 1;
+      while (value < end && (*value == ' ' || *value == '\t')) {
+        value++;
+      }
+      return value < end && *value == '1';
+    }
+    if (!next) {
+      break;
+    }
+    line = next + 2;
+  }
+  return false;
 }
 
 static void *connection_thread(void *argument) {
@@ -836,7 +875,7 @@ static void *connection_thread(void *argument) {
   request[length] = '\0';
 
   if (length) {
-    handle_request(fd, request);
+    handle_request(fd, request, header_flag(request, "X-Dumper-Debug"));
   }
   close(fd);
   return NULL;

@@ -10,3 +10,6 @@ void sleep_ms(int milliseconds);
 
 /* Write the whole buffer, retrying on EINTR.  Returns false on a real error. */
 bool write_all(int fd, const void *data, size_t length);
+
+/* Fill buffer with the first up, non-loopback IPv4 address. */
+bool local_ipv4(char *buffer, size_t size);
