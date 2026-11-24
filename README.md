@@ -156,7 +156,7 @@ PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk make
 
 The version is read from `VERSION` and embedded in the payload. Builds are
 written to `dist/coredump-dumper-v<VERSION>.elf`, for example
-`dist/coredump-dumper-v1.00.elf`.
+`dist/coredump-dumper-v2.0.0.elf`.
 
 Other targets:
 
